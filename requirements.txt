@@ -3,3 +3,4 @@ pandas
 pypdf
 reportlab
 pillow
+streamlit[pdf]
