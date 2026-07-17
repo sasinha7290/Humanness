@@ -810,8 +810,10 @@ def render_question_group(group_name, responses):
             )
         else:
             
-            st.markdown(f"#### {q["section"]}", 
-            unsafe_allow_html=True)
+            st.markdown(
+                f"#### {q['section']}", 
+                unsafe_allow_html=True,
+                )
             
 
         answer_options = ["Select one"] + list(q["options"].keys())
