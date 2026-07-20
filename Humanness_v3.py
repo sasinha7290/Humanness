@@ -1000,6 +1000,8 @@ if st.query_params.get("page") != "calculator":
     st.markdown(
         """
         <style>
+            @import url("https://fonts.googleapis.com/css2?family=Roboto:wght@500&display=swap");
+
             .stApp {
                 background: #ffffff;
             }
@@ -1031,7 +1033,8 @@ if st.query_params.get("page") != "calculator":
             .landing-cta {
                 padding: 1rem 1.5rem;
                 background: #ffffff;
-                color: #ffffff;
+                color: #123b86;
+                font-family: "Roboto";
                 font-size: clamp(1.1rem, 2vw, 1.5rem);
                 font-weight: 500;
                 letter-spacing: 0.01em;
@@ -1059,40 +1062,62 @@ if st.query_params.get("page") != "calculator":
     )
     st.stop()
 
-st.title("COMPASS Humanness Calculator")
+st.title("COMPASS TRUST-NAM Calculator: Benchmarking Human NAMs with Quantitative Translational Guardrails")
 
 st.markdown(
     """
-    Human-derived does not always mean human-relevant. This platform provides simple, transparent, and interoperable scoring frameworks for evaluating the Humanness, Relevance, and Fidelity of AI/ML-integrated NAMs using cohort-anchored biological evidence. Users can enter study features through a coding-free interface, generate quantitative benchmarking reports, and download publication-ready PDF summaries for reporting, benchmarking, and translational assessment.
+    Human-derived does not automatically mean human-relevant. The **COMPASS TRUST-NAM Calculator** provides a transparent, interoperable framework for benchmarking **Humanness, Relevance, and NAM Fidelity** using cohort-anchored human evidence. **Complete one or all three modules**, generate quantitative scores, and download a publication-ready TRUST-NAM Benchmarking Report for reporting, comparison, and translational assessment.
+    
+    *TRUST-NAM is the benchmarking framework; COMPASS is the web platform that implements it. Complete individual modules or all three to generate an integrated TRUST-NAM report*.
     """
 )
 
-st.markdown("""
+st.markdown(
+    """
     <style>
-        /* Expand the entire tab list to take full width */
-        .stTabs [data-baseweb="tab-list"] {
-            display: flex;
+        /* Keep all four tabs visible */
+        .stTabs [role="tablist"] {
+            display: grid !important;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 6px;
             width: 100%;
-        }
-        
-        /* Make each tab fill the available width evenly */
-        .stTabs [data-baseweb="tab"] {
-            flex: 1;
-            align-items: center;
-            justify-content: center;
-            height: 60px; /* Adjust tab height */
-            margin: 5px;
+            overflow: visible !important;
         }
 
-        /* Increase font size and text alignment */
-        .stTabs [data-baseweb="tab"] p {
-            font-size: 20px !important; /* Adjust font size */
-            font-weight: 600;
+        .stTabs [data-testid="stTab"] {
+            width: 100%;
+            min-width: 0;
+            min-height: 105px;
+            margin: 0;
+            padding: 8px 5px;
+            justify-content: center;
+            text-align: center;
+            white-space: normal !important;
+        }
+
+        .stTabs [data-testid="stTab"] p,
+        .stTabs [data-testid="stTab"] span,
+        .stTabs [data-testid="stTab"] strong {
+            font-size: 24px !important;
+            font-weight: 700 !important;
+            line-height: 1.15 !important;
+            white-space: normal !important;
+            overflow-wrap: anywhere;
+            text-align: center;
+        }
+
+        /* On narrow screens, display two tabs per row */
+        @media (max-width: 700px) {
+            .stTabs [role="tablist"] {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
-hscore, rscore, nscore, download = st.tabs(["Humanness", "Relevance", "NAM Fidelity", "Download Report ⬇"])
+hscore, rscore, nscore, download = st.tabs(["Step 1: Humanness", "**Step 2:** Relevance", "**Step 3:** NAM Fidelity", "**Generate TRUST-NAM Report ⬇**"])
 
 with hscore:
     st.markdown(
