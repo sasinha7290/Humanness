@@ -2,6 +2,8 @@ import streamlit as st
 import re
 import xml.etree.ElementTree as ET
 import io
+import base64
+from pathlib import Path
 import pandas as pd
 from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
@@ -993,6 +995,69 @@ def show_pdf(pdf_bytes):
 # ============================================================
 # App header
 # ============================================================
+
+if st.query_params.get("page") != "calculator":
+    st.markdown(
+        """
+        <style>
+            .stApp {
+                background: #ffffff;
+            }
+
+            [data-testid="stHeader"] {
+                display: none;
+            }
+
+            .block-container {
+                max-width: 100%;
+                margin: 0;
+                padding: 0 0 2rem !important;
+            }
+
+            .landing-link {
+                display: block;
+                width: 100%;
+                color: inherit;
+                text-decoration: none;
+            }
+
+            .landing-link img {
+                display: block;
+                width: 100%;
+                height: auto;
+                object-fit: contain;
+            }
+
+            .landing-cta {
+                padding: 1rem 1.5rem;
+                background: #ffffff;
+                color: #ffffff;
+                font-size: clamp(1.1rem, 2vw, 1.5rem);
+                font-weight: 500;
+                letter-spacing: 0.01em;
+                text-align: center;
+            }
+
+            .landing-link:hover .landing-cta {
+                background: #0a7f8f;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    landing_image = Path(__file__).resolve().parent / "images" / "website_picture.png"
+    landing_image_data = base64.b64encode(landing_image.read_bytes()).decode("ascii")
+    st.markdown(
+        f'<a class="landing-link" href="?page=calculator" target="_self" '
+        f'aria-label="Launch the Humanness calculator">'
+        f'<img src="data:image/png;base64,{landing_image_data}" '
+        f'alt="TRUST-NAM framework and report card">'
+        f'<div class="landing-cta">Click anywhere to launch the calculator</div>'
+        f"</a>",
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
 st.title("COMPASS Humanness Calculator")
 
