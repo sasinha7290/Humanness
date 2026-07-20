@@ -3,8 +3,13 @@ import re
 import xml.etree.ElementTree as ET
 import io
 import base64
+import json
+import logging
+from datetime import datetime, timezone
 from pathlib import Path
+import gspread
 import pandas as pd
+from google.oauth2.service_account import Credentials
 from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
 from reportlab.lib import colors
@@ -45,6 +50,11 @@ from reportlab.platypus import (
 )
 from reportlab.graphics.shapes import Drawing, String
 from reportlab.graphics.charts.piecharts import Pie
+
+
+APP_DIR = Path(__file__).resolve().parent
+IMAGES_DIR = APP_DIR / "images"
+LOGGER = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -501,18 +511,23 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
     
     styles = getSampleStyleSheet()
 
-    def render_metric(image_path, color, score, resp, score_name, score_desc):
+    def render_metric(image_name, color, score, resp, score_name, score_desc):
+        image_path = IMAGES_DIR / image_name
+        with PILImage.open(image_path) as pil_img:
+            source_width, source_height = pil_img.size
 
-        pil_img = PILImage.open(image_path)
-        alpha = pil_img.split()[3]
-        color_block = PILImage.new("RGBA", pil_img.size, color)
-
-        tinted_img = PILImage.composite(color_block, pil_img, alpha)
-
-        img_buffer = io.BytesIO()
-        tinted_img.save(img_buffer, format="PNG")
-        img_buffer.seek(0)
-        image = Image(img_buffer, width=100, height=100)
+        max_width = 95
+        max_height = 100
+        scale = min(
+            max_width / source_width,
+            max_height / source_height,
+        )
+        image = Image(
+            str(image_path),
+            width=source_width * scale,
+            height=source_height * scale,
+            mask="auto",
+        )
         pie = render_pie(score, color, resp)
         title = Paragraph(score_name, ParagraphStyle('ScoreTitle', parent=styles['Heading2'], fontSize=16, leading=20, textColor=colors.Color(color[0]/255, color[1]/255, color[2]/255, alpha=color[3]/255), alignment=1))
         description = Paragraph(score_desc, ParagraphStyle('ScoreDescription', parent=styles['Normal'], fontSize=12, leading=16, textColor=colors.Color(color[0]/255, color[1]/255, color[2]/255, alpha=color[3]/255), alignment=1))
@@ -597,13 +612,20 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
 
         return chart_drawing
     
-    story.append(Image("images/inetmed_letterhead.png", width = 600, height = 110))
+    story.append(
+        Image(
+            str(IMAGES_DIR / "inetmed_letterhead.png"),
+            width=530,
+            height=108,
+            mask="auto",
+        )
+    )
     
     story.append(Paragraph("TRUST-NAM Assessment Results", title_style))
     story.append(Spacer(1, 15))
-    story.append(render_metric("images/human.png", (30, 75, 150, 255), h_score, h_resp, "HUMANNESS SCORE", "Measures how strongly a discovery or model is anchored in real human biology."))
-    story.append(render_metric("images/relevance.png", (80, 120, 60, 255), r_score, r_resp, "RELEVANCE SCORE", "Measures how closely a model connects to clinically meaningful disease states, outcomes, and treatment responses."))
-    story.append(render_metric("images/nam.png", (200, 150, 60, 255), n_score, n_resp, "NAM FIDELITY SCORE", "Measures how faithfully and reproducibly a NAM captures human disease biology in a scalable, fit-for-purpose manner."))
+    story.append(render_metric("human.png", (30, 75, 150, 255), h_score, h_resp, "HUMANNESS SCORE", "Measures how strongly a discovery or model is anchored in real human biology."))
+    story.append(render_metric("relevance.png", (80, 120, 60, 255), r_score, r_resp, "RELEVANCE SCORE", "Measures how closely a model connects to clinically meaningful disease states, outcomes, and treatment responses."))
+    story.append(render_metric("nam.png", (200, 150, 60, 255), n_score, n_resp, "NAM FIDELITY SCORE", "Measures how faithfully and reproducibly a NAM captures human disease biology in a scalable, fit-for-purpose manner."))
 
     story.append(PageBreak())
 
@@ -712,7 +734,14 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
     append_breakdown("1. Humanness Index Breakdown", h_resp)
     append_breakdown("2. Relevance Index Breakdown", r_resp)
     append_breakdown("3. NAM Fidelity Index Breakdown", n_resp)
-    story.append(Image("images/inetmed_letterhead.png", width = 600, height = 110))
+    story.append(
+        Image(
+            str(IMAGES_DIR / "inetmed_letterhead.png"),
+            width=530,
+            height=108,
+            mask="auto",
+        )
+    )
 
     
     doc.build(story)
@@ -957,6 +986,136 @@ def process_and_fill_svg(svg_filepath, percentage, color_hex):
     except Exception as e:
         return None, f"Error processing SVG: {str(e)}"
 
+USER_SUBMISSIONS_SPREADSHEET_ID = (
+    "13SVyhy7Mil4N0jGLzfSvT_fz449CzK6-9apn026vBBk"
+)
+USER_SUBMISSIONS_SHEET_NAME = "Sheet1"
+GOOGLE_SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+]
+
+
+def get_google_service_account_info():
+    """Load either supported Streamlit Secrets credential format."""
+    if "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
+        raw_credentials = st.secrets["GCP_SERVICE_ACCOUNT_JSON"]
+        if isinstance(raw_credentials, str):
+            credentials_info = json.loads(raw_credentials)
+        else:
+            credentials_info = dict(raw_credentials)
+    elif "gcp_service_account" in st.secrets:
+        credentials_info = dict(st.secrets["gcp_service_account"])
+    else:
+        raise KeyError(
+            "Google service-account credentials are missing from "
+            "Streamlit Secrets."
+        )
+
+    required_fields = ("client_email", "private_key", "token_uri")
+    missing_fields = [
+        field
+        for field in required_fields
+        if not credentials_info.get(field)
+    ]
+    if missing_fields:
+        raise ValueError(
+            "The Google service-account credential is missing: "
+            + ", ".join(missing_fields)
+        )
+
+    # This also supports keys entered into TOML with literal \n characters.
+    credentials_info["private_key"] = credentials_info[
+        "private_key"
+    ].replace("\\n", "\n")
+    return credentials_info
+
+
+@st.cache_resource
+def get_user_submissions_worksheet():
+    """Connect to the private Google Sheet using Streamlit secrets."""
+    credentials_info = get_google_service_account_info()
+    credentials = Credentials.from_service_account_info(
+        credentials_info,
+        scopes=GOOGLE_SHEETS_SCOPES,
+    )
+    client = gspread.authorize(credentials)
+    spreadsheet = client.open_by_key(USER_SUBMISSIONS_SPREADSHEET_ID)
+    return spreadsheet.worksheet(USER_SUBMISSIONS_SHEET_NAME)
+
+
+def get_google_sheets_error_message(error):
+    """Return a safe, actionable message without exposing credentials."""
+    if isinstance(error, json.JSONDecodeError):
+        return (
+            "The Google credential in Streamlit Secrets is not valid JSON. "
+            "Paste the entire downloaded service-account JSON file inside "
+            "the GCP_SERVICE_ACCOUNT_JSON secret."
+        )
+    if isinstance(error, KeyError):
+        return (
+            "Google credentials are missing. Add "
+            "GCP_SERVICE_ACCOUNT_JSON in Streamlit Cloud under "
+            "Manage app > Settings > Secrets."
+        )
+    if isinstance(error, gspread.exceptions.SpreadsheetNotFound):
+        return (
+            "The service account cannot open the Google Sheet. Share the "
+            "sheet with the client_email from the service-account JSON and "
+            "give it Editor access."
+        )
+    if isinstance(error, gspread.exceptions.WorksheetNotFound):
+        return (
+            f'The spreadsheet tab "{USER_SUBMISSIONS_SHEET_NAME}" was not '
+            "found. Restore that tab or update "
+            "USER_SUBMISSIONS_SHEET_NAME in the app."
+        )
+    if isinstance(error, gspread.exceptions.APIError):
+        status_code = getattr(
+            getattr(error, "response", None),
+            "status_code",
+            None,
+        )
+        if status_code == 403:
+            return (
+                "Google denied access. Enable the Google Sheets API for the "
+                "service-account project and share the sheet with its "
+                "client_email as an Editor."
+            )
+        if status_code == 429:
+            return (
+                "Google Sheets is temporarily rate-limiting submissions. "
+                "Please wait a moment and try again."
+            )
+        return (
+            "Google Sheets returned an API error. Check that the Sheets API "
+            "is enabled and that the service account has Editor access."
+        )
+    if isinstance(error, ValueError):
+        return (
+            "The Google credential is incomplete or invalid. Download a new "
+            "JSON key for the service account and replace the Streamlit "
+            "secret."
+        )
+    return (
+        "The Google Sheets connection failed. The site administrator should "
+        "check the Streamlit app logs for the underlying error."
+    )
+
+
+def save_user_submission(user_id):
+    """Append one completed user-information form to Google Sheets."""
+    row = [
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        user_id.get("first name", "").strip(),
+        user_id.get("last name", "").strip(),
+        user_id.get("email", "").strip(),
+        user_id.get("institution", "").strip(),
+        user_id.get("purpose", "").strip(),
+    ]
+    worksheet = get_user_submissions_worksheet()
+    worksheet.append_row(row, value_input_option="USER_ENTERED")
+
+
 def get_user_id():
     with st.form("my_form"):
         fname = st.text_input("First Name:")
@@ -966,17 +1125,43 @@ def get_user_id():
         purpose = st.text_area("Purpose of Use:")
         submitted = st.form_submit_button("Submit")
 
-        if submitted:
-            user_id = {
-                "first name": fname,
-                "last name": lname,
-                "email": email,
-                "institution": institution,
-                "purpose": purpose
-            }
-            return user_id, submitted
+    user_id = {
+        "first name": fname,
+        "last name": lname,
+        "email": email,
+        "institution": institution,
+        "purpose": purpose,
+    }
+
+    form_complete = all(
+        str(value).strip() for value in user_id.values()
+    )
+
+    if submitted:
+        if form_complete:
+            try:
+                save_user_submission(user_id)
+                st.session_state["saved_user_signature"] = tuple(
+                    str(value).strip() for value in user_id.values()
+                )
+                st.success("Your information was saved.")
+            except Exception as error:
+                LOGGER.exception("Unable to save user submission")
+                st.session_state.pop("saved_user_signature", None)
+                st.error(get_google_sheets_error_message(error))
         else:
-            return {"name": "", "email": "", "institution": "", "purpose": ""}, submitted
+            st.session_state.pop("saved_user_signature", None)
+            st.error("Please complete every field before submitting.")
+
+    current_signature = tuple(
+        str(value).strip() for value in user_id.values()
+    )
+    submission_saved = (
+        st.session_state.get("saved_user_signature")
+        == current_signature
+    )
+
+    return user_id, submission_saved
 
 def generate_csv_files():
     csv_data = {
@@ -1049,7 +1234,7 @@ if st.query_params.get("page") != "calculator":
         unsafe_allow_html=True,
     )
 
-    landing_image = Path(__file__).resolve().parent / "images" / "website_picture.png"
+    landing_image = IMAGES_DIR / "website_picture.png"
     landing_image_data = base64.b64encode(landing_image.read_bytes()).decode("ascii")
     st.markdown(
         f'<a class="landing-link" href="?page=calculator" target="_self" '
@@ -1138,7 +1323,7 @@ with hscore:
     st.divider()
 
     svg_markup, error = process_and_fill_svg(
-        "images/human.svg", 
+        IMAGES_DIR / "human.svg",
         score, 
         "#FFCD00"         
     )
@@ -1168,7 +1353,7 @@ with rscore:
     st.divider()
 
     svg_markup, error = process_and_fill_svg(
-        "images/relevance.svg", 
+        IMAGES_DIR / "relevance.svg",
         r_score, 
         "#FFCD00"          
     )
@@ -1196,7 +1381,7 @@ with nscore:
     st.divider()
 
     svg_markup, error = process_and_fill_svg(
-        "images/nam.svg", 
+        IMAGES_DIR / "nam.svg",
         n_score, 
         "#FFCD00"         
     )
@@ -1220,7 +1405,7 @@ with download:
 
     
     # Compile document buffer
-    user_id, submitted = get_user_id()
+    user_id, submission_saved = get_user_id()
 
     pdf_bytes = generate_pdf_report(
         responses,
@@ -1233,13 +1418,26 @@ with download:
     )
 
     show_pdf(pdf_bytes)
+
+    required_fields = (
+        "first name",
+        "last name",
+        "email",
+        "institution",
+        "purpose",
+    )
+    form_complete = all(
+        str(user_id.get(field, "")).strip()
+        for field in required_fields
+    )
     
     st.download_button(
         label="Download Publication PDF Summary ⬇",
         data=pdf_bytes,
         file_name="TRUST_NAM_Humanness_Assessment_Report.pdf",
         mime="application/pdf",
-        disabled=not submitted or not user_id.get("name") or not user_id.get("email") or not user_id.get("institution") or not user_id.get("purpose"),
+        disabled=not (form_complete and submission_saved),
+        on_click="ignore",
     )
 
 #TO-DO: Only allow download if the user inputs name, email id, institution, and purpose
