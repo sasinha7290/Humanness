@@ -3,13 +3,13 @@ import re
 import xml.etree.ElementTree as ET
 import io
 import base64
-import json
+import csv
 import logging
+import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-import gspread
 import pandas as pd
-from google.oauth2.service_account import Credentials
 from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
 from reportlab.lib import colors
@@ -986,134 +986,80 @@ def process_and_fill_svg(svg_filepath, percentage, color_hex):
     except Exception as e:
         return None, f"Error processing SVG: {str(e)}"
 
-USER_SUBMISSIONS_SPREADSHEET_ID = (
-    "13SVyhy7Mil4N0jGLzfSvT_fz449CzK6-9apn026vBBk"
+USER_SUBMISSION_FIELDS = (
+    "submitted_at_utc",
+    "first_name",
+    "last_name",
+    "email",
+    "institution",
+    "purpose",
 )
-USER_SUBMISSIONS_SHEET_NAME = "Sheet1"
-GOOGLE_SHEETS_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-]
+CSV_WRITE_LOCK = threading.Lock()
 
 
-def get_google_service_account_info():
-    """Load either supported Streamlit Secrets credential format."""
-    if "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
-        raw_credentials = st.secrets["GCP_SERVICE_ACCOUNT_JSON"]
-        if isinstance(raw_credentials, str):
-            credentials_info = json.loads(raw_credentials)
-        else:
-            credentials_info = dict(raw_credentials)
-    elif "gcp_service_account" in st.secrets:
-        credentials_info = dict(st.secrets["gcp_service_account"])
-    else:
-        raise KeyError(
-            "Google service-account credentials are missing from "
-            "Streamlit Secrets."
-        )
+def get_user_submissions_file():
+    """Choose a persistent Railway Volume path when one is available."""
+    configured_file = os.environ.get("USER_SUBMISSIONS_FILE", "").strip()
+    if configured_file:
+        return Path(configured_file).expanduser()
 
-    required_fields = ("client_email", "private_key", "token_uri")
-    missing_fields = [
-        field
-        for field in required_fields
-        if not credentials_info.get(field)
-    ]
-    if missing_fields:
-        raise ValueError(
-            "The Google service-account credential is missing: "
-            + ", ".join(missing_fields)
-        )
+    railway_volume = os.environ.get(
+        "RAILWAY_VOLUME_MOUNT_PATH", ""
+    ).strip()
+    if railway_volume:
+        return Path(railway_volume) / "user_submissions.csv"
 
-    # This also supports keys entered into TOML with literal \n characters.
-    credentials_info["private_key"] = credentials_info[
-        "private_key"
-    ].replace("\\n", "\n")
-    return credentials_info
+    return APP_DIR / "data" / "user_submissions.csv"
 
 
-@st.cache_resource
-def get_user_submissions_worksheet():
-    """Connect to the private Google Sheet using Streamlit secrets."""
-    credentials_info = get_google_service_account_info()
-    credentials = Credentials.from_service_account_info(
-        credentials_info,
-        scopes=GOOGLE_SHEETS_SCOPES,
-    )
-    client = gspread.authorize(credentials)
-    spreadsheet = client.open_by_key(USER_SUBMISSIONS_SPREADSHEET_ID)
-    return spreadsheet.worksheet(USER_SUBMISSIONS_SHEET_NAME)
+def safe_csv_value(value):
+    """Prevent spreadsheet programs from treating user text as a formula."""
+    text = str(value or "").strip()
+    if text.startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
 
 
-def get_google_sheets_error_message(error):
-    """Return a safe, actionable message without exposing credentials."""
-    if isinstance(error, json.JSONDecodeError):
+def get_csv_storage_error_message(error):
+    """Return an actionable storage message without exposing user data."""
+    if isinstance(error, PermissionError):
         return (
-            "The Google credential in Streamlit Secrets is not valid JSON. "
-            "Paste the entire downloaded service-account JSON file inside "
-            "the GCP_SERVICE_ACCOUNT_JSON secret."
-        )
-    if isinstance(error, KeyError):
-        return (
-            "Google credentials are missing. Add "
-            "GCP_SERVICE_ACCOUNT_JSON in Streamlit Cloud under "
-            "Manage app > Settings > Secrets."
-        )
-    if isinstance(error, gspread.exceptions.SpreadsheetNotFound):
-        return (
-            "The service account cannot open the Google Sheet. Share the "
-            "sheet with the client_email from the service-account JSON and "
-            "give it Editor access."
-        )
-    if isinstance(error, gspread.exceptions.WorksheetNotFound):
-        return (
-            f'The spreadsheet tab "{USER_SUBMISSIONS_SHEET_NAME}" was not '
-            "found. Restore that tab or update "
-            "USER_SUBMISSIONS_SHEET_NAME in the app."
-        )
-    if isinstance(error, gspread.exceptions.APIError):
-        status_code = getattr(
-            getattr(error, "response", None),
-            "status_code",
-            None,
-        )
-        if status_code == 403:
-            return (
-                "Google denied access. Enable the Google Sheets API for the "
-                "service-account project and share the sheet with its "
-                "client_email as an Editor."
-            )
-        if status_code == 429:
-            return (
-                "Google Sheets is temporarily rate-limiting submissions. "
-                "Please wait a moment and try again."
-            )
-        return (
-            "Google Sheets returned an API error. Check that the Sheets API "
-            "is enabled and that the service account has Editor access."
-        )
-    if isinstance(error, ValueError):
-        return (
-            "The Google credential is incomplete or invalid. Download a new "
-            "JSON key for the service account and replace the Streamlit "
-            "secret."
+            "The app cannot write to its user-data folder. On Railway, "
+            "attach a Volume to the service and mount it at /data."
         )
     return (
-        "The Google Sheets connection failed. The site administrator should "
-        "check the Streamlit app logs for the underlying error."
+        "Your information could not be saved to the CSV file. Check the "
+        "Railway Volume and deployment logs, then try again."
     )
 
 
 def save_user_submission(user_id):
-    """Append one completed user-information form to Google Sheets."""
-    row = [
-        datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        user_id.get("first name", "").strip(),
-        user_id.get("last name", "").strip(),
-        user_id.get("email", "").strip(),
-        user_id.get("institution", "").strip(),
-        user_id.get("purpose", "").strip(),
-    ]
-    worksheet = get_user_submissions_worksheet()
-    worksheet.append_row(row, value_input_option="USER_ENTERED")
+    """Append one completed user-information form to a local CSV file."""
+    csv_file = get_user_submissions_file()
+    row = {
+        "submitted_at_utc": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        ),
+        "first_name": safe_csv_value(user_id.get("first name")),
+        "last_name": safe_csv_value(user_id.get("last name")),
+        "email": safe_csv_value(user_id.get("email")),
+        "institution": safe_csv_value(user_id.get("institution")),
+        "purpose": safe_csv_value(user_id.get("purpose")),
+    }
+
+    with CSV_WRITE_LOCK:
+        csv_file.parent.mkdir(parents=True, exist_ok=True)
+        write_header = (
+            not csv_file.exists() or csv_file.stat().st_size == 0
+        )
+        with csv_file.open("a", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=USER_SUBMISSION_FIELDS,
+            )
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
 
 
 def get_user_id():
@@ -1148,7 +1094,7 @@ def get_user_id():
             except Exception as error:
                 LOGGER.exception("Unable to save user submission")
                 st.session_state.pop("saved_user_signature", None)
-                st.error(get_google_sheets_error_message(error))
+                st.error(get_csv_storage_error_message(error))
         else:
             st.session_state.pop("saved_user_signature", None)
             st.error("Please complete every field before submitting.")
