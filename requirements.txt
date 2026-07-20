@@ -4,5 +4,3 @@ pypdf
 reportlab
 pillow
 streamlit[pdf]
-google-auth
-gspread
